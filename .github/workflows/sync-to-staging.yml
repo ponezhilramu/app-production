@@ -1,0 +1,73 @@
+name: Sync Production to Staging
+
+on:
+  push:
+    branches: [test/sync-pilot]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-prod-to-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TARGET_REPO: ponezhilramu/app-staging
+  TARGET_BRANCH: test/sync-pilot
+  SYNC_BRANCH: sync/test-production-to-staging
+
+jobs:
+  sync:
+    if: github.repository == 'ponezhilramu/app-production'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure git and fetch target
+        run: |
+          git config user.name  "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+          git remote add target "https://x-access-token:${{ secrets.SYNC_TOKEN }}@github.com/${TARGET_REPO}.git"
+          git fetch target
+
+      - name: Prepare sync branch and merge source
+        id: prep
+        run: |
+          set -e
+          if git ls-remote --exit-code --heads target "$SYNC_BRANCH" >/dev/null 2>&1; then
+            git checkout -B "$SYNC_BRANCH" "target/$SYNC_BRANCH"
+            git merge --no-edit "target/$TARGET_BRANCH"
+          else
+            git checkout -B "$SYNC_BRANCH" "target/$TARGET_BRANCH"
+          fi
+          git merge --no-ff --no-edit "$GITHUB_SHA"
+          if git diff --quiet "target/$TARGET_BRANCH" HEAD; then
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing to sync."
+          else
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push sync branch
+        if: steps.prep.outputs.changes == 'true'
+        run: git push target "$SYNC_BRANCH"
+
+      - name: Create PR if none is open
+        if: steps.prep.outputs.changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --repo "$TARGET_REPO" --head "$SYNC_BRANCH" \
+            --base "$TARGET_BRANCH" --state open --json number -q '.[0].number')
+          if [ -z "$EXISTING" ]; then
+            gh pr create --repo "$TARGET_REPO" \
+              --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" \
+              --title "Sync: Production to Staging" \
+              --body "Automated sync from ${{ github.repository }}@${GITHUB_SHA}. Merge using a MERGE COMMIT only."
+          else
+            echo "PR #$EXISTING already open; branch updated."
+          fi
