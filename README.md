@@ -2,3 +2,5 @@
 Bidirectional sync test
 
 Adding this line to test the sync
+
+Testing merge conflict
